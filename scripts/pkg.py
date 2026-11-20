@@ -6,6 +6,8 @@
   python3 -I scripts/pkg.py release PKGDIR RELEASE
   python3 -I scripts/pkg.py matrix PKGDIR
   python3 -I scripts/pkg.py env PKGDIR RELEASE ARCH
+  python3 -I scripts/pkg.py sources PKGDIR
+  python3 -I scripts/pkg.py linked PKGDIR LINKED SOURCEDIR
 
 check: the rules of each pkg.toml (all of pkgs/ when no PKGDIR is given).
 get: one value; KEY is a dotted path (build.image). A list gives one line
@@ -18,8 +20,15 @@ words: each value has only safe characters) that scripts/build.sh gives to
 the container: PKG_NAME, PKG_VERSION, PKG_RELEASE, PKG_ARCH, PKG_TARGETS,
 PKG_SOURCE_REPO, PKG_SOURCE_REF, PKG_SOURCE_COMMIT, PKG_SOURCE_TARBALL,
 PKG_SOURCE_TARBALL_SHA256, PKG_SOURCE_SIGNATURE and PKG_SOURCE_SIGNER when
-[source] has them, and for each [[dep]] DEP_NAME_VERSION, DEP_NAME_REPO,
-DEP_NAME_REF, DEP_NAME_COMMIT.
+[source] has them, and for each [[dep]] DEP_NAME_VERSION, DEP_NAME_ASSET
+(its source asset), and DEP_NAME_REPO, DEP_NAME_REF, DEP_NAME_COMMIT (a git
+dep) or DEP_NAME_TARBALL, DEP_NAME_TARBALL_SHA256 (a tarball dep).
+sources: one line PART<TAB>ASSET for each source asset of a release.
+linked: check the file LINKED (NAME-RELEASE-linux-ARCH.linked.txt of the
+build: one line FILE<TAB>OWNER<TAB>VERSION<TAB>LICENCE<TAB>SOURCE for each
+input file of the static link; OWNER is qemu, dep:NAME or apk:NAME). Each
+file with a copyleft licence must name a source asset of SOURCEDIR, or
+match an [[exception]] of pkg.toml.
 
 Exit 1 with one line for each fault, 2 for a usage error or a file that
 cannot be read.
@@ -36,6 +45,7 @@ HOSTS = {"amd64", "arm64"}
 NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 VERSION = re.compile(r"^[0-9]+(\.[0-9]+)*$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+NAME_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 IMAGE = re.compile(r"^[a-z0-9.-]+(/[a-z0-9._-]+)+:[A-Za-z0-9._-]+@sha256:[0-9a-f]{64}$")
 # The characters of a value that goes into a shell line or an asset name.
 SAFE = re.compile(r"^[A-Za-z0-9._,:/@+-]*$")
@@ -43,6 +53,10 @@ SAFE = re.compile(r"^[A-Za-z0-9._,:/@+-]*$")
 SOURCE_EXTRA = ("tarball", "tarball-sha256", "signature", "signer")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 FPR = re.compile(r"^[0-9A-F]{40}$")
+URL = re.compile(r"^https://\S+$")
+DEP_KEYS = ("version", "repo", "ref", "commit", "tarball", "tarball-sha256")
+# A licence that asks for the source of a static link.
+COPYLEFT = re.compile(r"(^|[^A-Za-z])(A?GPL|LGPL|MPL|EPL|EUPL|CDDL|OSL|CC-BY-SA)", re.IGNORECASE)
 
 
 class Usage(Exception):
@@ -69,6 +83,14 @@ def faults(pkgdir: Path) -> list[str]:
         elif rule is not None and not rule.match(value):
             out.append(f"{where}: {label}{key} = {value!r} has not the form {rule.pattern}")
 
+    def signed(table: dict, label: str) -> None:
+        if "signature" in table:
+            need(table, "signature", URL, label)
+            need(table, "signer", FPR, label)
+            signer = str(table.get("signer", ""))
+            if FPR.match(signer) and not (pkgdir / "keys" / f"{signer}.asc").is_file():
+                out.append(f"{where}: no key keys/{signer}.asc for {label}signer")
+
     need(p, "name", NAME, "")
     if p.get("name") != pkgdir.name:
         out.append(f"{where}: name {p.get('name')!r} is not the name of the directory {pkgdir.name!r}")
@@ -91,11 +113,10 @@ def faults(pkgdir: Path) -> list[str]:
         if "tarball" in source:
             need(source, "tarball", re.compile(r"^https://\S+$"), "source.")
             need(source, "tarball-sha256", SHA256, "source.")
-        if "signature" in source:
-            need(source, "signature", re.compile(r"^https://\S+$"), "source.")
-            need(source, "signer", FPR, "source.")
-            if FPR.match(str(source.get("signer", ""))) and not (pkgdir / "keys" / f"{source['signer']}.asc").is_file():
-                out.append(f"{where}: no key keys/{source['signer']}.asc for source.signer")
+        signed(source, "source.")
+        extra = source.get("extra-sources", [])
+        if not isinstance(extra, list) or not all(isinstance(e, str) and NAME_FILE.match(e) for e in extra):
+            out.append(f"{where}: source.extra-sources must be a list of file names")
     build = p.get("build")
     if not isinstance(build, dict):
         out.append(f"{where}: [build] is missing")
@@ -111,13 +132,23 @@ def faults(pkgdir: Path) -> list[str]:
         label = f"dep[{i}]."
         need(dep, "name", NAME, label)
         need(dep, "version", VERSION, label)
-        need(dep, "repo", re.compile(r"^https://\S+$"), label)
-        need(dep, "ref", None, label)
-        need(dep, "commit", COMMIT, label)
+        if "tarball" in dep:
+            need(dep, "tarball", URL, label)
+            need(dep, "tarball-sha256", SHA256, label)
+            if any(k in dep for k in ("repo", "ref", "commit")):
+                out.append(f"{where}: {label} has a tarball and a git source: give one")
+        else:
+            need(dep, "repo", URL, label)
+            need(dep, "ref", None, label)
+            need(dep, "commit", COMMIT, label)
+        signed(dep, label)
         need(dep, "licence", None, label)
         if dep.get("name") in seen:
             out.append(f"{where}: dep {dep.get('name')!r} is given twice")
         seen.add(dep.get("name"))
+    for i, exc in enumerate(p.get("exception", [])):
+        need(exc, "owner", re.compile(r"^(qemu|dep:[a-z0-9-]+|apk:[A-Za-z0-9._+-]+)$"), f"exception[{i}].")
+        need(exc, "reason", None, f"exception[{i}].")
     # Each value that goes to the shell of the container.
     for key, value in flat(p):
         if not SAFE.match(value):
@@ -137,9 +168,85 @@ def flat(p: dict) -> list[tuple[str, str]]:
             pairs.append((f"PKG_SOURCE_{key.upper().replace('-', '_')}", str(source[key])))
     for dep in p.get("dep", []):
         prefix = "DEP_" + str(dep.get("name", "")).upper().replace("-", "_")
-        for key in ("version", "repo", "ref", "commit"):
-            pairs.append((f"{prefix}_{key.upper()}", str(dep.get(key, ""))))
+        for key in DEP_KEYS:
+            if key in dep:
+                pairs.append((f"{prefix}_{key.upper().replace('-', '_')}", str(dep[key])))
+        pairs.append((f"{prefix}_ASSET", dep_asset(dep)))
     return pairs
+
+
+def basename(url: str) -> str:
+    return url.rstrip("/").rsplit("/", 1)[-1]
+
+
+def dep_asset(dep: dict) -> str:
+    """The source asset of a dep: the tarball of upstream, or a git archive."""
+    if "tarball" in dep:
+        return basename(str(dep["tarball"]))
+    return f"{dep.get('name', '')}-{dep.get('version', '')}.tar.xz"
+
+
+def sources(p: dict) -> list[tuple[str, str]]:
+    """Each source asset of a release, with its part."""
+    out = []
+    source = p["source"]
+    if "tarball" in source:
+        out.append((p["name"], basename(source["tarball"])))
+    else:
+        out.append((p["name"], f"{p['name']}-{p['version']}.tar.xz"))
+    if "signature" in source:
+        out.append((p["name"], basename(source["signature"])))
+    out += [(p["name"], e) for e in source.get("extra-sources", [])]
+    for dep in p.get("dep", []):
+        out.append((dep["name"], dep_asset(dep)))
+        if "signature" in dep:
+            out.append((dep["name"], basename(dep["signature"])))
+    return out
+
+
+def copyleft(licence: str) -> bool:
+    """True when the licence asks for the source. An expression with OR is
+    free of it when one alternative is; an expression with parentheses, or
+    no licence, counts as copyleft."""
+    licence = licence.strip()
+    if not licence or licence in ("-", "unknown") or "(" in licence:
+        return not licence or licence in ("-", "unknown") or bool(COPYLEFT.search(licence))
+    return all(COPYLEFT.search(alt) for alt in re.split(r"\s+OR\s+", licence))
+
+
+def linked(p: dict, path: Path, sourcedir: Path) -> list[str]:
+    """The faults of the list of the inputs of a static link."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as e:
+        raise Usage(f"{path}: {e}") from e
+    deps = {d["name"]: d for d in p.get("dep", [])}
+    declared = {asset for _, asset in sources(p)}
+    exceptions = {e["owner"]: e["reason"] for e in p.get("exception", [])}
+    out, rows = [], 0
+    for n, line in enumerate(lines, 1):
+        if not line or line.startswith("#"):
+            continue
+        rows += 1
+        cols = line.split("\t")
+        if len(cols) != 5:
+            out.append(f"{path}:{n}: not 5 fields")
+            continue
+        file, owner, _, licence, source = cols
+        if owner == "qemu":
+            licence = p["licence"]
+        elif owner.startswith("dep:") and owner[4:] in deps:
+            licence = deps[owner[4:]]["licence"]
+        elif not owner.startswith("apk:"):
+            out.append(f"{path}:{n}: {file}: no known owner ({owner})")
+            continue
+        if source != "-" and (source not in declared or not (sourcedir / source).is_file()):
+            out.append(f"{path}:{n}: {file}: the source {source} is not a source asset in {sourcedir}")
+        elif source == "-" and copyleft(licence) and owner not in exceptions:
+            out.append(f"{path}:{n}: {file} ({owner}, {licence}) is copyleft and has no source asset")
+    if rows == 0:
+        out.append(f"{path}: no input of the link")
+    return out
 
 
 def release(p: dict, value: str) -> str:
@@ -203,6 +310,15 @@ def main(argv: list[str]) -> int:
             if not SAFE.match(value):
                 raise Usage(f"the value of {key} is not safe in a shell word")
             print(f"{key}={value}")
+    elif cmd == "sources" and len(args) == 1:
+        for part, asset in sources(p):
+            print(f"{part}\t{asset}")
+    elif cmd == "linked" and len(args) == 3:
+        found = linked(p, Path(args[1]), Path(args[2]))
+        for fault in found:
+            print(fault)
+        print(f"pkg: {args[1]}: {len(found)} faults")
+        return 1 if found else 0
     else:
         raise Usage(f"unknown command or arguments: {' '.join(argv)}")
     return 0

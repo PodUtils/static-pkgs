@@ -7,6 +7,10 @@
 # each with dist/ and source/ (scripts/build.sh). OUTDIR gets each file of
 # each dist/, the files of source/ (the same bytes on each host, else exit
 # 1), and SHA256SUMS of them all. NOTES gets the body of the release.
+# It fails when a source asset of `scripts/pkg.py sources` is missing, when
+# a source file is not one of them, and when a file of a static link
+# (NAME-RELEASE-linux-ARCH.linked.txt) has a copyleft licence and no source
+# asset (`scripts/pkg.py linked`).
 # COMMIT (the commit of this repository) and REPO (OWNER/NAME) go into the
 # notes; GITHUB_SHA and GITHUB_REPOSITORY are their defaults.
 set -eu
@@ -43,6 +47,22 @@ for h in $hosts; do
         [ "$a" = "$b" ] || die "the source of $h is not the source of $first: $(echo; echo "$a"; echo "$b")"
     fi
 done
+pkg sources "$pkgdir" > "$out/.sources"
+while IFS="$(printf '\t')" read -r part asset; do
+    [ -f "$out/$asset" ] || die "no source asset $asset of $part"
+done < "$out/.sources"
+for f in "$in/out-$first"/source/*; do
+    b=$(basename "$f")
+    cut -f 2 "$out/.sources" | grep -qxF "$b" || die "the source file $b is not a source asset of pkg.toml"
+done
+n=0
+for f in "$out"/*.linked.txt; do
+    [ -f "$f" ] || continue
+    pkg linked "$pkgdir" "$f" "$out"
+    n=$((n + 1))
+done
+[ "$n" -gt 0 ] || die "no list of the static link (*.linked.txt)"
+mv "$out/.sources" "$out.sources"
 (cd "$out" && sha256sum -- * > "$out/SHA256SUMS.new" && mv "$out/SHA256SUMS.new" "$out/SHA256SUMS")
 cat "$out/SHA256SUMS"
 
@@ -63,11 +83,23 @@ import tomllib
 with open(sys.argv[1], "rb") as f:
     p = tomllib.load(f)
 for d in p.get("dep", []):
-    print(f"- Part: {d['name']} {d['version']} ({d['licence']}), {d['repo']} {d['ref']}, commit `{d['commit']}`.")
+    if "tarball" in d:
+        where = f"{d['tarball']}, SHA-256 `{d['tarball-sha256']}`"
+    else:
+        where = f"{d['repo']} {d['ref']}, commit `{d['commit']}`"
+    print(f"- Part: {d['name']} {d['version']} ({d['licence']}), {where}.")
 EOF
     echo "- Build image: \`$(pkg get "$pkgdir" build.image)\`."
     echo "- Recipe: https://github.com/$repo/tree/$commit/pkgs/$name"
     echo "- Licence: $licence. ${note}"
+    echo
+    echo "The source of each part (the files \`*.tar.*\` and \`*.sig\` of this release):"
+    echo
+    while IFS="$(printf '\t')" read -r part asset; do
+        echo "- $part: \`$asset\`"
+    done < "$out.sources"
+    echo
+    echo "The files \`*.linked.txt\` give each input file of the static link, its owner, its licence and its source asset."
     echo
     echo "Each file and its SHA-256:"
     echo
@@ -76,5 +108,6 @@ EOF
     echo '```'
     echo
     echo "Check a file: \`sha256sum -c --ignore-missing SHA256SUMS\` and \`gh attestation verify FILE --repo $repo\`."
-    echo "The files \`*.tar.xz\` and \`*.sig\` are the source of each part of the binaries. Release: \`$tag\`."
+    echo "Release: \`$tag\`."
 } > "$notes"
+rm -f "$out.sources"

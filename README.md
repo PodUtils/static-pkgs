@@ -21,7 +21,11 @@ rebuild of the same version. A release never changes. Its files:
   with the installed layout (`./bin/NAME`, `./share/...`).
 * `NAME-RELEASE-linux-ARCH.components.txt`: each package of the build
   container, with its version and its licence.
-* `*.tar.xz` and `*.sig`: the source of each part of the binaries.
+* `NAME-RELEASE-linux-ARCH.linked.txt`: each input file of the static
+  link, with its owner, its licence and its source asset.
+* The source of each part (`*.tar.*`, `*.sig`): the release lists them
+  (`scripts/pkg.py sources`), and the workflow fails when a file of the
+  link with a copyleft licence has no source asset.
 * `SHA256SUMS`: the SHA-256 of each file above.
 * `NAME-RELEASE.attestation.jsonl`: the build provenance (SLSA) of each
   file of `SHA256SUMS`, signed for `release.yml` of this repository.

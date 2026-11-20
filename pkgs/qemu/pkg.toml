@@ -5,7 +5,7 @@ name = "qemu"
 version = "11.1.3"
 summary = "QEMU system emulators for x86_64 and aarch64 guests, qemu-img and the firmware data, static-pie with musl"
 licence = "GPL-2.0-only"
-licence-note = "QEMU as a whole is GPL-2.0-only; parts are GPL-2.0-or-later, LGPL-2.1-or-later, BSD or MIT (LICENSE and COPYING of the source). The binaries also link the static libraries of Alpine: the file NAME-RELEASE-linux-ARCH.components.txt gives each package, its version and its licence."
+licence-note = "QEMU as a whole is GPL-2.0-only; parts are GPL-2.0-or-later, LGPL-2.1-or-later, BSD or MIT (LICENSE and COPYING of the source). Each library with a copyleft licence comes from a pinned source of [[dep]], and its source is an asset. The file NAME-RELEASE-linux-ARCH.linked.txt gives each file of the static link, its owner, its licence and its source asset."
 hosts = ["amd64", "arm64"]
 targets = ["x86_64-softmmu", "aarch64-softmmu"]
 
@@ -18,6 +18,7 @@ tarball = "https://download.qemu.org/qemu-11.1.3.tar.xz"
 tarball-sha256 = "5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22"
 signature = "https://download.qemu.org/qemu-11.1.3.tar.xz.sig"
 signer = "CEACC9E15534EBABB82D3FA03353C9CEF108B584"
+extra-sources = ["qemu-11.1.3-subprojects.tar.xz"]
 note = "The build compiles the release tarball: it checks its SHA-256 and its signature (keys/SIGNER.asc), and that each file of the commit has the same bytes in it. The tarball adds the source of the firmware (roms/) and of the subprojects. The commit holds 9d378cab537d70d9e02edc11ff6ded7266c1078e (hw/nvme: add basic live migration support) of v11.1.0."
 
 [build]
@@ -32,6 +33,37 @@ repo = "https://gitlab.com/qemu-project/libslirp.git"
 ref = "v4.9.7"
 commit = "ce12dcddf710a71dc0de6450ec95edbadf8e9f66"
 licence = "BSD-3-Clause"
+
+# glib and libaio are LGPL: the build compiles them from these pinned
+# sources, not from the packages of Alpine, so that the source asset is the
+# exact source of the static link. glib has no libmount (-Dlibmount=disabled),
+# so no library of util-linux is in the link.
+[[dep]]
+name = "glib"
+version = "2.88.4"
+tarball = "https://download.gnome.org/sources/glib/2.88/glib-2.88.4.tar.xz"
+tarball-sha256 = "25fd169f3b2f91fe2391ad297883ce0fcf30c69fc789ffd1c9672d1332b1c5a8"
+licence = "LGPL-2.1-or-later"
+note = "GNOME signs no tarball; the SHA-256 is the one of glib-2.88.4.sha256sum of upstream"
+
+[[dep]]
+name = "libaio"
+version = "0.3.113"
+repo = "https://pagure.io/libaio.git"
+ref = "libaio-0.3.113"
+commit = "1b18bfafc6a2f7b9fa2c6be77a95afed8b7be448"
+licence = "LGPL-2.1-or-later"
+note = "pagure.io serves git over dumb HTTP: the build fetches the tag with its history, not at depth 1"
+
+# A file of the static link with a copyleft licence and no source asset
+# must match one of these, with the reason (scripts/pkg.py linked).
+[[exception]]
+owner = "apk:gcc"
+reason = "libgcc_eh.a and libatomic.a of GCC: the GCC Runtime Library Exception 3.1 allows their static link with no condition on the source"
+
+[[exception]]
+owner = "apk:libgcc-static"
+reason = "libgcc.a, crtbeginS.o and crtendS.o of GCC: the GCC Runtime Library Exception 3.1 allows their static link with no condition on the source"
 
 [recipe]
 from = "https://github.com/hermeticbuild/qemu-prebuilt"

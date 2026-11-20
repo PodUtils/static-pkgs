@@ -8,7 +8,9 @@
 # ./bin/NAME, a static ELF, the version of pkg.toml in --version. The
 # emulator of the host advertises KVM. The firmware of the data archive
 # boots: each emulator runs with bin/../share/qemu and no -L until the time
-# limit, and a missing firmware stops it at once.
+# limit, and a missing firmware stops it at once. Each file of the static
+# link with a copyleft licence has its source asset in DIST/../source
+# (scripts/pkg.py linked).
 set -eu
 [ "$#" -eq 3 ] || { echo "usage: check.sh DIST RELEASE ARCH" >&2; exit 2; }
 dist=$1 release=$2 arch=$3
@@ -57,4 +59,5 @@ boots() {
 }
 boots "$work/bin/qemu-system-x86_64" -machine q35
 boots "$work/bin/qemu-system-aarch64" -machine virt -cpu max -bios edk2-aarch64-code.fd
+python3 -I "$here/../../scripts/pkg.py" linked "$here" "$dist/qemu-$release-linux-$arch.linked.txt" "$dist/../source"
 echo "check: qemu $release linux-$arch: the assets pass"

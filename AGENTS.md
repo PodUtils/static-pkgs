@@ -38,8 +38,12 @@ everything must be statically compiled." (the owner, 2026-11-05)
   in `pkgs/NAME/keys/`. `scripts/pkg.py check` enforces the form.
 * A release carries the exact source of each part with a licence that
   asks for it (GPL, LGPL): the tarball of upstream, and the source of each
-  part that the build fetched. The source files are the same bytes on each
-  host; the workflow fails when they differ.
+  part that the build fetched. Build a copyleft library from a pinned
+  source (`[[dep]]`), not from a package of the distribution. The build
+  lists each input of the static link (`NAME-RELEASE-linux-ARCH.linked.txt`),
+  and `scripts/pkg.py linked` fails on a copyleft input with no source
+  asset. The source files are the same bytes on each host; the workflow
+  fails when they differ.
 * Each package states its licence and the licence of its recipe in
   `pkg.toml` and in its `README.md`. A recipe from another project keeps
   its notice beside it (`pkgs/qemu/LICENSE.hermeticbuild`).
