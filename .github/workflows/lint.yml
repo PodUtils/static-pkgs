@@ -1,0 +1,54 @@
+name: lint
+
+# The checks of each push to main and each pull request: the rules of each
+# pkgs/NAME/pkg.toml (scripts/pkg.py check), shellcheck of each script, and
+# the rules of the workflows (scripts/check-workflows.py of podcrates at a
+# tag, checked by its SHA-256: each action pinned by its commit with its
+# version in a comment, the top-level permissions contents: read, a time
+# limit for each job). No job may write.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PODCRATES_TAG: v0.79.0
+  CHECK_WORKFLOWS_SHA256: eb40c1f66614ecd75eca2126a9433d960113f33b3d1644fd386d4a16cd982588
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The packages
+        run: python3 -I scripts/pkg.py check
+      - name: The scripts
+        run: |
+          set -eu
+          files=$(git ls-files '*.sh')
+          for f in $files; do sh -n "$f"; done
+          # shellcheck disable=SC2086 # one word for each file name.
+          shellcheck -s sh $files
+          python3 -I -m py_compile scripts/pkg.py
+      - name: The workflows
+        run: |
+          set -eu
+          f=$RUNNER_TEMP/check-workflows.py
+          curl -qfsSL --retry 5 --max-time 60 -o "$f" \
+            "https://raw.githubusercontent.com/PodUtils/podcrates/$PODCRATES_TAG/scripts/check-workflows.py"
+          echo "$CHECK_WORKFLOWS_SHA256  $f" | sha256sum -c -
+          python3 -I "$f" .github/workflows
