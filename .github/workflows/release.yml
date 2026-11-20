@@ -1,0 +1,205 @@
+name: release
+
+# Build a package of pkgs/ and publish it as the GitHub release NAME-RELEASE
+# (README.md, "Releases"). The inputs: the package, the release (the
+# version of pkgs/NAME/pkg.toml, or VERSION.N for a rebuild) and dry_run.
+#
+# * plan: checks the inputs and pkg.toml, and that the tag is new; gives
+#   the matrix of the hosts of the package.
+# * build: one job for each host: scripts/build.sh in the pinned container,
+#   then pkgs/NAME/<build.check> with scripts/check-static.sh of podcrates
+#   (no PT_INTERP, no DT_NEEDED) at a tag, checked by its SHA-256.
+# * assemble: scripts/assemble.sh: the assets of each host, the source
+#   (the same bytes on each host), SHA256SUMS and the notes.
+# * publish (not in a dry run, from main only): the build provenance of
+#   each asset (attest-build-provenance), and the release with each asset
+#   and the attestation bundle NAME-RELEASE.attestation.jsonl.
+#
+# Each action is pinned by its commit. Only the job publish may write.
+# The inputs go to the shell through env, never into the script text.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "The package: a directory of pkgs/"
+        required: true
+        type: choice
+        options:
+          - qemu
+      release:
+        description: "VERSION of pkgs/NAME/pkg.toml, or VERSION.N (N >= 1) for a rebuild"
+        required: true
+        type: string
+      dry_run:
+        description: "Build and check only; publish nothing"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.package }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE: ${{ inputs.package }}
+  RELEASE: ${{ inputs.release }}
+  DRY_RUN: ${{ inputs.dry_run }}
+  # scripts/check-static.sh of PodUtils/podcrates at a tag.
+  PODCRATES_TAG: v0.79.0
+  CHECK_STATIC_SHA256: a7209385c2f083973b820d88dc5777d34955794fc4a4a5a9d9dba0048d777df3
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The inputs and the package
+        id: plan
+        run: |
+          set -eu
+          case $PACKAGE in
+            ''|*[!a-z0-9-]*) echo "the package '$PACKAGE' is not a name of pkgs/"; exit 1 ;;
+          esac
+          python3 -I scripts/pkg.py check
+          tag=$(python3 -I scripts/pkg.py release "pkgs/$PACKAGE" "$RELEASE")
+          rc=0
+          git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null || rc=$?
+          case $rc in
+            0) [ "$DRY_RUN" = true ] || { echo "the tag $tag exists: a release never moves"; exit 1; }
+               echo "::warning::the tag $tag exists; a dry run builds it again" ;;
+            2) ;;
+            *) echo "git ls-remote of the tags failed with exit $rc"; exit 1 ;;
+          esac
+          if [ "$DRY_RUN" != true ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "a release comes from main, not from $GITHUB_REF"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(python3 -I scripts/pkg.py matrix "pkgs/$PACKAGE")" >> "$GITHUB_OUTPUT"
+          echo "the release $tag of $GITHUB_SHA, dry run: $DRY_RUN"
+
+  build:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: check-static.sh of podcrates
+        run: |
+          set -eu
+          f=$RUNNER_TEMP/check-static.sh
+          curl -qfsSL --retry 5 --max-time 60 -o "$f" \
+            "https://raw.githubusercontent.com/PodUtils/podcrates/$PODCRATES_TAG/scripts/check-static.sh"
+          echo "$CHECK_STATIC_SHA256  $f" | sha256sum -c -
+      - name: Build
+        run: sh scripts/build.sh "$PACKAGE" "$RELEASE" "$ARCH" "$RUNNER_TEMP/out"
+      - name: Check
+        run: |
+          set -eu
+          check=$(python3 -I scripts/pkg.py get "pkgs/$PACKAGE" build.check)
+          CHECK_STATIC=$RUNNER_TEMP/check-static.sh sh "pkgs/$PACKAGE/$check" "$RUNNER_TEMP/out/dist" "$RELEASE" "$ARCH"
+          (cd "$RUNNER_TEMP/out" && sha256sum dist/* source/*)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: out-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/out/dist
+            ${{ runner.temp }}/out/source
+          if-no-files-found: error
+          retention-days: 7
+
+  assemble:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: out-*
+          path: ${{ runner.temp }}/in
+      - name: The assets, SHA256SUMS and the notes
+        run: |
+          set -eu
+          sh scripts/assemble.sh "$PACKAGE" "$RELEASE" "$RUNNER_TEMP/in" "$RUNNER_TEMP/assets" "$RUNNER_TEMP/notes.md"
+          (cd "$RUNNER_TEMP/assets" && sha256sum -c SHA256SUMS)
+          cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
+          mv "$RUNNER_TEMP/notes.md" "$RUNNER_TEMP/assets.notes.md"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: assets
+          path: |
+            ${{ runner.temp }}/assets
+            ${{ runner.temp }}/assets.notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    if: ${{ !inputs.dry_run }}
+    needs: [plan, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      # The release and its tag.
+      contents: write
+      # The signature of the provenance: the OIDC token of this run.
+      id-token: write
+      # The store of the attestation.
+      attestations: write
+    env:
+      TAG: ${{ needs.plan.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: assets
+          path: ${{ runner.temp }}/in
+      - name: The files against SHA256SUMS
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/in/assets"
+          sha256sum -c SHA256SUMS
+          [ "$(find . -type f | wc -l)" = "$(($(wc -l < SHA256SUMS) + 1))" ] || { echo "a file is not in SHA256SUMS"; exit 1; }
+      - name: Build provenance
+        id: attest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/in/assets/SHA256SUMS
+      - name: The release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP/in/assets"
+          cp "$BUNDLE" "$TAG.attestation.jsonl"
+          # A draft first: the release shows only when each file is in it.
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft \
+            --title "$TAG" --notes-file "$RUNNER_TEMP/in/assets.notes.md" -- *
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[] | "\(.name) \(.size) \(.digest)"'

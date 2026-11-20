@@ -1,0 +1,40 @@
+# The static QEMU of PodUtils: the emulators of podvm's guests.
+# scripts/pkg.py reads this file. Each pin is exact: the image by its
+# digest, each git source by its commit.
+name = "qemu"
+version = "11.1.3"
+summary = "QEMU system emulators for x86_64 and aarch64 guests, qemu-img and the firmware data, static-pie with musl"
+licence = "GPL-2.0-only"
+licence-note = "QEMU as a whole is GPL-2.0-only; parts are GPL-2.0-or-later, LGPL-2.1-or-later, BSD or MIT (LICENSE and COPYING of the source). The binaries also link the static libraries of Alpine: the file NAME-RELEASE-linux-ARCH.components.txt gives each package, its version and its licence."
+hosts = ["amd64", "arm64"]
+targets = ["x86_64-softmmu", "aarch64-softmmu"]
+
+[source]
+repo = "https://gitlab.com/qemu-project/qemu.git"
+ref = "v11.1.3"
+commit = "005c61c0ef6f6ae615283440b4bb7be51b2c6ddd"
+tag-object = "34105b228c52e1d1d055003fab74d0503fa4bc37"
+tarball = "https://download.qemu.org/qemu-11.1.3.tar.xz"
+tarball-sha256 = "5a8289c7940dc77d3873c81a6c29ba3afe1446fc9d36e77fa1658cdbecb84b22"
+signature = "https://download.qemu.org/qemu-11.1.3.tar.xz.sig"
+signer = "CEACC9E15534EBABB82D3FA03353C9CEF108B584"
+note = "The build compiles the release tarball: it checks its SHA-256 and its signature (keys/SIGNER.asc), and that each file of the commit has the same bytes in it. The tarball adds the source of the firmware (roms/) and of the subprojects. The commit holds 9d378cab537d70d9e02edc11ff6ded7266c1078e (hw/nvme: add basic live migration support) of v11.1.0."
+
+[build]
+image = "docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf"
+script = "build.sh"
+check = "check.sh"
+
+[[dep]]
+name = "libslirp"
+version = "4.9.7"
+repo = "https://gitlab.com/qemu-project/libslirp.git"
+ref = "v4.9.7"
+commit = "ce12dcddf710a71dc0de6450ec95edbadf8e9f66"
+licence = "BSD-3-Clause"
+
+[recipe]
+from = "https://github.com/hermeticbuild/qemu-prebuilt"
+commit = "7305686b06baead290ea0f1a22735fb5c0944da9"
+licence = "MIT"
+note = "Dockerfile, build and tools/package-qemu-artifacts.sh, changed to POSIX sh in one container run; LICENSE.hermeticbuild keeps the notice"
